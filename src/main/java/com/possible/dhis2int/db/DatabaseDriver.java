@@ -2,7 +2,10 @@ package com.possible.dhis2int.db;
 
 import static org.apache.log4j.Logger.getLogger;
 
+import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
 import java.sql.Connection;
+import java.sql.Date;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -34,11 +37,11 @@ public class DatabaseDriver {
 		this.properties = properties;
 	}
 
-	public Results executeQuery(String formattedSql, String type) throws DHISIntegratorException {
+	public Results executeQuery(String formattedSql, String type) throws DHISIntegratorException, UnsupportedEncodingException {
 		Connection connection = null;
 		try {
-
-			connection = DriverManager.getConnection(properties.openmrsDBUrl);
+			String decodedUrl = URLDecoder.decode(properties.openmrsDBUrl,"UTF-8"); 
+			connection = DriverManager.getConnection(decodedUrl);
 			if ("ElisGeneric".equalsIgnoreCase(type)) {
 				connection = DriverManager.getConnection(properties.openelisDBUrl);
 			}
@@ -81,25 +84,37 @@ public class DatabaseDriver {
 			if (connection != null) {
 				try {
 					connection.close();
+					
 				} catch (SQLException ignored) {
 				}
 			}
 		}
 	}
 
-	public String getQuerylog(String programName, Integer month, Integer year) throws DHISIntegratorException {
+	public String getQuerylog(String programName, Integer month, Integer year, java.util.Date date) throws DHISIntegratorException {
 		logger.info("Inside getQueryLog method");
 		ResultSet resultSet = null;
 		Connection connection = null;
 		String log = null;
 		try {
 			connection = DriverManager.getConnection(properties.openmrsDBUrl);
-			PreparedStatement ps = connection.prepareStatement(
+			PreparedStatement ps;
+			String retrieveQuery;
+			if (date != null) { // search by date 
+				retrieveQuery = "SELECT * FROM  dhis2_log WHERE report_name = ? AND submitted_date = ? ORDER BY submitted_date DESC LIMIT 1";
+				ps = connection.prepareStatement(retrieveQuery);
+	            Timestamp ts=new Timestamp(date.getTime());  
+				ps.setString(1, programName);
+				ps.setTimestamp(2, ts);
+			} else { 
+				retrieveQuery = "SELECT * FROM  dhis2_log WHERE report_name = ? AND report_month = ? AND report_year = ? ORDER BY submitted_date DESC LIMIT 1";
+				ps = connection.prepareStatement(retrieveQuery);
+				ps.setString(1, programName);
+				ps.setInt(2, month);
+				ps.setInt(3, year);
 
-					"SELECT * FROM  dhis2_log WHERE report_name = ? AND report_month = ? AND report_year = ? ORDER BY submitted_date DESC LIMIT 1");
-			ps.setString(1, programName);
-			ps.setInt(2, month);
-			ps.setInt(3, year);
+			}
+
 			resultSet = ps.executeQuery();
 			JSONObject jsonObject = new JSONObject();
 			while (resultSet.next()) {
@@ -109,8 +124,10 @@ public class DatabaseDriver {
 			}
 			log = jsonObject.toString(INDENT_FACTOR);
 		} catch (SQLException e) {
+			logger.error(e);
 			throw new DHISIntegratorException(String.format(Messages.SQL_EXECUTION_EXCEPTION), e);
 		} catch (JSONException e) {
+			logger.error(e);
 			throw new DHISIntegratorException(String.format(Messages.SQL_EXECUTION_EXCEPTION), e);
 		} finally {
 			if (connection != null) {

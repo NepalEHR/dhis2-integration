@@ -1,12 +1,14 @@
 var reportConfigUrl = '/bahmni_config/openmrs/apps/reports/reports.json';
 var downloadUrl = '/dhis-integration/download?name=NAME&year=YEAR&month=MONTH&isImam=IS_IMAM&isFamily=IS_FAMILY';
 var submitUrl = '/dhis-integration/submit-to-dhis';
+var submitDailyReportUrl = '/dhis-integration/submit-to-dhis-daily';
 var submitUrlAtr = '/dhis-integration/submit-to-dhis-atr';
 var loginRedirectUrl = '/bahmni/home/index.html#/login?showLoginMessage&from=';
 var NUTRITION_PROGRAM = '03-2 Nutrition Acute Malnutrition';
 var FAMILYPLANNING_PROGRAM = '07 Family Planning Program';
 var logUrl = '/dhis-integration/log';
 var fiscalYearReportUrl = '/dhis-integration/download/fiscal-year-report?name=NAME&startYear=START_YEAR&startMonth=START_MONTH&endYear=END_YEAR&endMonth=END_MONTH&isImam=IS_IMAM';
+var dailyReportUrl = '/dhis-integration/download/daily-report?name=NAME&date=DATE';
 var supportedStartDate = 2090;
 var supportedEndDate = 2065;
 var approximateNepaliYear = (new Date()).getFullYear() + 56;
@@ -219,6 +221,15 @@ function downloadFiscalYearReport(index) {
 	downloadCommon(url);
 }
 
+function downloadDailyReport() {
+	var date = $('#datepicker').val();
+	//alert(date);
+	var programName = 'EWARS Plus';
+	var url = dailyReportUrl.replace('NAME', programName).replace(
+			'DATE', date);
+	downloadCommon(url);
+}
+
 function downloadCommon(url) {
 	var a = document.createElement('a');
 	a.href = url;
@@ -226,6 +237,43 @@ function downloadCommon(url) {
 	a.click();
 	return false;
 }
+
+
+function submitDailyReport() {
+	spinner.show();
+	var date = $('#datepicker').val();
+	var programName = 'EWARS Plus';
+	var parameters = {
+		name : programName,
+		date : date
+	};
+	//alert(JSON.stringify(parameters));
+	
+	disableBtn(element('submitDailyReport'));
+	var submitTo = submitDailyReportUrl;
+	var index = 100 //TODO: hardcoded index as 1 to get element as status-100
+	$.get(submitTo, parameters).done(function(data) {
+		data = JSON.parse(data)
+		if (!$.isEmptyObject(data)) {
+			putStatus(data, index);
+		}
+	}).fail(function(response) {
+		if (response.status == 403) {
+			putStatus({
+				status : 'Failure',
+				exception : 'Not Authenticated'
+			}, index);
+		}
+		putStatus({
+			status : 'Failure',
+			exception : response
+		}, index);
+	}).always(function() {
+		enableBtn(element('submit', index));
+		spinner.hide();
+	});
+}
+
 
 function submit(index, attribute) {
 	spinner.show();
@@ -276,21 +324,42 @@ function confirmAndSubmit(index, attribute) {
 	if (confirm("This action cannot be reversed. Are you sure, you want to submit?")) {
 		submit(index, attribute);
 	}
+	
 }
+
+function confirmAndSubmitDailyReport() {
+	if (confirm("This action cannot be reversed. Are you sure, you want to submit?")) {
+		submitDailyReport();
+	}
+}
+
 
 function getStatus(index) {
 	var programName = element('program-name', index).html();
 	var year = element('year', index).val();
 	var month = element('month', index).val();
-
+	var date = $('#datepicker').val();
+    //console.log("getting log for "+ date);
+    if(year){
+    	date="";
+    }
+    if (date){
+		programName = 'EWARS Plus';
+		month = "";
+		year = "";
+	}
 	var parameters = {
 		programName : programName,
 		month : month,
-		year : year
+		year : year,
+		date : date
 	};
+	
+	
 	spinner.show();
 	$.get(logUrl, parameters).done(function(data) {
 		data = JSON.parse(data);
+		//console.log("logs :: "+data);
 		if ($.isEmptyObject(data)) {
 			element('comment', index).html('');
 			element('status', index).html('');

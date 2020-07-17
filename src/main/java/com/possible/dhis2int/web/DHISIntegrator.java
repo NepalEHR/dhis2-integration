@@ -15,6 +15,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.text.DateFormat;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Date;
@@ -26,6 +30,9 @@ import javax.servlet.http.HttpServletResponse;
 
 import org.apache.log4j.Logger;
 import org.joda.time.DateTime;
+import org.joda.time.format.DateTimeFormat;
+import org.joda.time.format.DateTimeFormatter;
+import org.joda.time.format.DateTimeParser;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -173,6 +180,36 @@ public class DHISIntegrator {
 
 	}
 
+	@RequestMapping(path = "/submit-to-dhis-daily")
+	public String submitToDHISDaily(@RequestParam("name") String program, @RequestParam("date") String dateStr
+			,HttpServletRequest clientReq, HttpServletResponse clientRes)
+			throws IOException, JSONException, ParseException {
+		String userName = new Cookies(clientReq).getValue(BAHMNI_USER);
+		Submission submission = new Submission();
+		String filePath = submittedDataStore.getAbsolutePath(submission);
+		Status status;
+		try {
+			
+			submitToDHISDaily(submission, program, dateStr);
+			status = submission.getStatus();
+		} catch (DHISIntegratorException | JSONException e) {
+			status = Failure;
+			submission.setException(e);
+			logger.error(DHIS_SUBMISSION_FAILED, e);
+		} catch (Exception e) {
+			status = Failure;
+			submission.setException(e);
+			logger.error(Messages.INTERNAL_SERVER_ERROR, e);
+		}
+
+		submittedDataStore.write(submission);
+		submissionLog.log(program, userName, "Daily Ewars Report", status, filePath);
+	    Date date=new SimpleDateFormat("yyyy-MM-dd").parse(dateStr);  
+		recordLog(userName, program, 0, 0, submission.getInfo(), status, "Daily Ewars Report", date); //TODO: 
+		return submission.getInfo();
+	}
+	
+	
 	@RequestMapping(path = "/submit-to-dhis")
 	public String submitToDHIS(@RequestParam("name") String program, @RequestParam("year") Integer year,
 			@RequestParam("month") Integer month, @RequestParam("comment") String comment,
@@ -207,10 +244,11 @@ public class DHISIntegrator {
 
 		submittedDataStore.write(submission);
 		submissionLog.log(program, userName, comment, status, filePath);
-		recordLog(userName, program, year, month, submission.getInfo(), status, comment);
+		recordLog(userName, program, year, month, submission.getInfo(), status, comment, new Date());
 
 		return submission.getInfo();
 	}
+	
 	
 	@RequestMapping(path = "/submit-to-dhis_report_status")
 	public String submitToDHISLOG(@RequestParam("name") String program, @RequestParam("year") Integer year,
@@ -233,13 +271,13 @@ public class DHISIntegrator {
 		}
 		submittedDataStore.write(submission);
 
-		recordLog(userName, program, year, month, submission.getInfo(), status, comment);
+		recordLog(userName, program, year, month, submission.getInfo(), status, comment, new Date());
 		return submission.getInfo();
 	}
 
 	private String recordLog(String userName, String program, Integer year, Integer month, String log, Status status,
-			String comment) throws IOException, JSONException {
-		Date date = new Date();
+			String comment, Date date) throws IOException, JSONException {
+
 		Status submissionStatus = status;
 		if (status == Status.Failure) {
 			submissionStatus = Status.Incomplete;
@@ -253,9 +291,14 @@ public class DHISIntegrator {
 
 	@RequestMapping(path = "/log")
 	public String getLog(@RequestParam String programName, @RequestParam("year") Integer year,
-			@RequestParam("month") Integer month) throws SQLException {
-		logger.info("Inside getLog method");
-		return databaseDriver.getQuerylog(programName, month, year);
+			@RequestParam("month") Integer month, @RequestParam("date") String dateStr) throws SQLException, ParseException {
+		logger.info("Inside getLog method"+dateStr);
+		Date date = null;
+		if(dateStr != null && dateStr.length() > 0) {
+			date=new SimpleDateFormat("yyyy-MM-dd").parse(dateStr);
+		}
+	       
+		return databaseDriver.getQuerylog(programName, month, year, date);
 	}
 
 	@RequestMapping(path = "/submit-to-dhis-atr")
@@ -316,7 +359,7 @@ public class DHISIntegrator {
 				}
 			}
 			submissionLog.log(program, userName, comment, status, filePathData);
-			recordLog(userName, program, year, month, comment, status, comment);
+			recordLog(userName, program, year, month, comment, status, comment, new Date());
 		}
 		return headSubmission.getInfo();
 	}
@@ -367,11 +410,28 @@ public class DHISIntegrator {
 		}
 		try {
 			String redirectUri = UriComponentsBuilder.fromHttpUrl(properties.reportsUrl)
-					.queryParam("responseType", DOWNLOAD_FORMAT).queryParam("name", name)
+					.queryParam("responseType", DOWNLOAD_FORMAT)
+					.queryParam("name", name)
 					.queryParam("startDate", reportDateRange.getStartDate())
 					.queryParam("endDate", reportDateRange.getEndDate()).toUriString();
 			response.sendRedirect(redirectUri);
 
+		} catch (Exception e) {
+			logger.error(format(REPORT_DOWNLOAD_FAILED, name), e);
+			response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+		}
+	}
+	
+	@RequestMapping(path = "/download/daily-report")
+	public void downloadDailyReport(@RequestParam("name") String name, @RequestParam("date") String dateStr, HttpServletResponse response)
+			throws JSONException, IOException {
+		try {
+			String redirectUri = UriComponentsBuilder.fromHttpUrl(properties.reportsUrl)
+					.queryParam("responseType", DOWNLOAD_FORMAT)
+					.queryParam("name", name)
+					.queryParam("startDate", dateStr)
+					.queryParam("endDate", dateStr).toUriString();
+			response.sendRedirect(redirectUri);
 		} catch (Exception e) {
 			logger.error(format(REPORT_DOWNLOAD_FAILED, name), e);
 			response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
@@ -403,6 +463,37 @@ public class DHISIntegrator {
 			response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
 		}
 	}
+	
+	
+	private Submission submitToDHISDaily(Submission submission, String name, String dateStr)
+			throws DHISIntegratorException, JSONException, IOException {
+		JSONObject reportConfig = getConfig(properties.reportsJson);
+
+		List<JSONObject> childReports = new ArrayList<JSONObject>();
+		childReports = jsonArrayToList(
+					reportConfig.getJSONObject(name).getJSONObject("config").getJSONArray("reports"));
+
+		JSONObject dhisConfig = getDHISConfig(name);
+		
+		DateTimeFormatter formatter = DateTimeFormat.forPattern("yyyy-MM-dd");
+		DateTime date = formatter.parseDateTime(dateStr);
+		logger.debug("Input Date : "+dateStr);
+		ReportDateRange dateRange = new ReportDateRange(date, date);
+		logger.debug("Formatted Date : "+dateRange.toString());
+		List<Object> programDataValue = getProgramDataValues(childReports, dhisConfig.getJSONObject("reports"),
+				dateRange);
+
+		JSONObject programDataValueSet = new JSONObject();
+		programDataValueSet.put("orgUnit", dhisConfig.getString("orgUnit"));
+		programDataValueSet.put("dataValues", programDataValue);
+		programDataValueSet.put("period", dateStr.replace("-", ""));
+
+		ResponseEntity<String> responseEntity = dHISClient.postDailyReport(SUBMISSION_ENDPOINT, programDataValueSet);
+		submission.setPostedData(programDataValueSet);
+		submission.setResponse(responseEntity);
+		return submission;
+	}
+
 
 	private Submission submitToDHIS(Submission submission, String name, Integer year, Integer month)
 			throws DHISIntegratorException, JSONException, IOException {
